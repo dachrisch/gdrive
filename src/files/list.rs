@@ -12,6 +12,7 @@ use std::fmt::Display;
 use std::fmt::Formatter;
 use std::io;
 use std::str::FromStr;
+use crate::common::file_tree_drive::FileTreeDrive;
 
 const MAX_PAGE_SIZE: usize = 1000;
 
@@ -22,6 +23,7 @@ pub struct Config {
     pub skip_header: bool,
     pub truncate_name: bool,
     pub field_separator: String,
+    pub folder_size: bool,
 }
 
 pub async fn list(config: Config) -> Result<(), Error> {
@@ -34,7 +36,7 @@ pub async fn list(config: Config) -> Result<(), Error> {
             max_files: config.max_files,
         },
     )
-    .await?;
+        .await?;
 
     let mut values: Vec<[String; 5]> = vec![];
 
@@ -42,13 +44,25 @@ pub async fn list(config: Config) -> Result<(), Error> {
         let file_type = simplified_file_type(&file);
         let file_name = format_file_name(&config, &file);
 
+        let file_size = if config.folder_size && drive_file::is_directory(&file) {
+            // If the file is a directory, calculate the total size of the directory
+            let tree = FileTreeDrive::from_file(&hub, &file).await.map_err(|_| Error::FolderSize)?;
+            let tree_info = tree.info();
+
+            if tree_info.total_file_size > i64::MAX as u128 {
+                Some(i64::MAX)
+            } else {
+                Some(tree_info.total_file_size as i64)
+            }
+        } else {
+            file.size
+        };
+
         values.push([
             file.id.unwrap_or_default(),
             file_name,
             file_type,
-            file.size
-                .map(|bytes| files::info::format_bytes(bytes, &DisplayConfig::default()))
-                .unwrap_or_default(),
+            file_size.map(|bytes| files::info::format_bytes(bytes, &DisplayConfig::default())).unwrap_or_default(),
             file.created_time
                 .map(files::info::format_date_time)
                 .unwrap_or_default(),
@@ -214,6 +228,7 @@ impl fmt::Display for ListSortOrder {
 pub enum Error {
     Hub(hub_helper::Error),
     ListFiles(google_drive3::Error),
+    FolderSize,
 }
 
 impl error::Error for Error {}
@@ -223,6 +238,7 @@ impl Display for Error {
         match self {
             Error::Hub(e) => write!(f, "{}", e),
             Error::ListFiles(e) => write!(f, "Failed to list files: {}", e),
+            Error::FolderSize => write!(f, "Failed to determine folder size: "),
         }
     }
 }
